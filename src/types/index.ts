@@ -11,7 +11,7 @@ export interface ChatResponse {
   embedding?: number[];
   metadata: {
     mode: BrainMode;
-    provider: 'groq' | 'gemini' | 'huggingface' | 'local';
+    provider: 'groq' | 'gemini' | 'cohere' | 'local';
     model?: string;
     memory_used: boolean;
     retrieved_messages: number;
