@@ -5,6 +5,58 @@ import axios from 'axios';
 // =====================================================
 // Fetches exercise/activity data from Strava
 
+let cachedAccessToken: string | null = null;
+let tokenExpiry: number = 0;
+
+/**
+ * Get a valid access token (auto-refreshes if expired)
+ */
+async function getValidAccessToken(): Promise<string | null> {
+  const clientId = process.env.STRAVA_CLIENT_ID;
+  const clientSecret = process.env.STRAVA_CLIENT_SECRET;
+  const refreshToken = process.env.STRAVA_REFRESH_TOKEN;
+  const currentAccessToken = process.env.STRAVA_ACCESS_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    console.warn('⚠️ Strava not configured - missing credentials');
+    return null;
+  }
+
+  // Check if we have a valid cached token
+  if (cachedAccessToken && Date.now() < tokenExpiry) {
+    return cachedAccessToken;
+  }
+
+  // Try to refresh the token
+  try {
+    const response = await axios.post('https://www.strava.com/oauth/token', {
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    });
+
+    cachedAccessToken = response.data.access_token;
+    // Set expiry 30 minutes before actual expiry to be safe
+    tokenExpiry = Date.now() + (response.data.expires_in - 1800) * 1000;
+    
+    console.log('✅ Strava token refreshed successfully');
+    return cachedAccessToken;
+  } catch (error: any) {
+    console.error('❌ Strava token refresh failed:', error.response?.data || error.message);
+    // Fall back to current access token if refresh fails
+    return currentAccessToken || null;
+  }
+}
+
+/**
+ * Clear cached token (for testing)
+ */
+export function clearStravaTokenCache(): void {
+  cachedAccessToken = null;
+  tokenExpiry = 0;
+}
+
 interface StravaActivity {
   id: number;
   name: string;
