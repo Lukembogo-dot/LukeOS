@@ -1,0 +1,80 @@
+{
+  "name": "LukeOS - Daily Productivity Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:8000/api/metrics/daily/{{ $now.format('YYYY-MM-DD') }}?user_id=1",
+        "method": "GET"
+      },
+      "id": "http-request",
+      "name": "Get Daily Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "{{$json.chat_id}}",
+        "text": "📊 *Daily Productivity Report*\n\nScore: *{{$json.score}}/100* ({{$json.grade}})\n{{$json.description}}\n\n💻 Coding: {{$json.metrics.productive_app_minutes}} min\n🏃 Exercise: {{$json.metrics.exercise_minutes}} min\n📅 Meetings: {{$json.metrics.meetings_minutes}} min\n🎯 Focus: {{$json.metrics.focus_time_minutes}} min\n\n*Sources:* GitHub: {{$json.sources.github}}, Strava: {{$json.sources.strava}}, Calendar: {{$json.sources.calendar}}"
+      },
+      "id": "telegram-node",
+      "name": "Notify Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [750, 300],
+      "credentials": {
+        "telegramApi": "telegram-creds"
+      }
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Daily Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Daily Metrics": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["lukeos", "productivity", "daily", "alert"],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-03T12:00:00.000Z",
+  "versionId": "1"
+}

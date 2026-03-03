@@ -1,0 +1,89 @@
+{
+  "name": "LukeOS - Weekly Data Collection",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Weekly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:8000/api/cron/collect",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "telegramId",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "id": "http-request",
+      "name": "Trigger Collection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "{{$json.chat_id}}",
+        "text": "✅ Weekly data collected!\n\nGitHub: {{$json.github.commits}} commits, {{$json.github.codingMinutes}} min coding\nStrava: {{$json.strava.activities}} activities, {{$json.strava.exerciseMinutes}} min exercise\n\nScore: {{$json.score}}"
+      },
+      "id": "telegram-node",
+      "name": "Notify Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [750, 300],
+      "credentials": {
+        "telegramApi": "telegram-creds"
+      }
+    }
+  ],
+  "connections": {
+    "Weekly Trigger": {
+      "main": [
+        [
+          {
+            "node": "Trigger Collection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Collection": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["lukeos", "productivity", "automation"],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-03T12:00:00.000Z",
+  "versionId": "1"
+}

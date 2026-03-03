@@ -36,10 +36,12 @@ export async function getGitHubActivity(
 ): Promise<GitHubActivity> {
   const headers: Record<string, string> = {
     'Accept': 'application/vnd.github.v3+json',
+    'User-Agent': 'LukeOS-Brain/1.0',
   };
   
   if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+    // Personal Access Tokens use 'token' prefix, not 'Bearer'
+    headers['Authorization'] = `token ${token}`;
   }
 
   try {
@@ -54,10 +56,13 @@ export async function getGitHubActivity(
 
     const events = eventsRes.data || [];
     
-    // Filter events by date range
+    // Filter events by date range - compare date strings to avoid timezone issues
+    const startStr = startDate.split('T')[0];
+    const endStr = endDate.split('T')[0];
+    
     const filteredEvents = events.filter((event: any) => {
-      const eventDate = new Date(event.created_at);
-      return eventDate >= new Date(startDate) && eventDate <= new Date(endDate);
+      const eventDateStr = event.created_at.split('T')[0];
+      return eventDateStr >= startStr && eventDateStr <= endStr;
     });
 
     // Extract commits (PushEvent)

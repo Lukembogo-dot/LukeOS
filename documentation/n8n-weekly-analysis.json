@@ -1,0 +1,80 @@
+{
+  "name": "LukeOS - Weekly Analysis Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "cronExpression": "0 9 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Sunday Morning",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:8000/api/analysis/weekly?user_id=1&week_start={{ $now.minus(7, 'days').format('YYYY-MM-DD') }}&week_end={{ $now.format('YYYY-MM-DD') }}",
+        "method": "GET"
+      },
+      "id": "http-request",
+      "name": "Get Weekly Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "{{$json.chat_id}}",
+        "text": "📈 *Weekly Productivity Analysis*\n\n{{$json.analysis}}"
+      },
+      "id": "telegram-node",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [750, 300],
+      "credentials": {
+        "telegramApi": "telegram-creds"
+      }
+    }
+  ],
+  "connections": {
+    "Sunday Morning": {
+      "main": [
+        [
+          {
+            "node": "Get Weekly Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Weekly Analysis": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["lukeos", "productivity", "weekly", "analysis"],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-03T12:00:00.000Z",
+  "versionId": "1"
+}

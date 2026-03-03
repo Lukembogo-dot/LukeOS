@@ -1,0 +1,343 @@
+{
+  "info": {
+    "name": "LukeOS Brain API",
+    "description": "Complete API collection for LukeOS Brain - Productivity Tracking System\n\nBase URL: http://localhost:8000",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "1",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Status",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function() { pm.response.to.have.status(200); });",
+                  "pm.test(\"Response has status ok\", function() { var jsonData = pm.response.json(); pm.expect(jsonData.status).to.eql(\"ok\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cron Status",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/cron/status"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat",
+      "item": [
+        {
+          "name": "Chat Message",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/chat",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_message\": \"Hello, how are you?\", \"user_id\": \"{{userId}}\", \"mode\": \"chat\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function() { pm.response.to.have.status(200); });",
+                  "pm.test(\"Response has response\", function() { var jsonData = pm.response.json(); pm.expect(jsonData.response).to.exist; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Analyze Mode",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/chat",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_message\": \"Analyze my productivity\", \"user_id\": \"{{userId}}\", \"mode\": \"analyze\"}"
+            }
+          }
+        },
+        {
+          "name": "Generate Embedding",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/chat",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_message\": \"Generate embedding\", \"user_id\": \"{{userId}}\", \"mode\": \"embed\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Embedding length is 1024\", function() { var jsonData = pm.response.json(); pm.expect(jsonData.embedding.length).to.eql(1024); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Activities",
+      "item": [
+        {
+          "name": "Log Activity",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/activity",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_id\": \"{{userId}}\", \"category_name\": \"coding\", \"duration_minutes\": 60, \"notes\": \"Testing API\", \"date\": \"2026-03-03\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function() { pm.response.to.have.status(200); });",
+                  "pm.test(\"Activity logged\", function() { var jsonData = pm.response.json(); pm.expect(jsonData.success).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Activities",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/activities?user_id={{userId}}&start_date=2026-02-24&end_date=2026-03-03",
+              "host": ["{{baseUrl}}"], "path": ["api", "activities"],
+              "query": [{"key": "user_id", "value": "{{userId}}"}, {"key": "start_date", "value": "2026-02-24"}, {"key": "end_date", "value": "2026-03-03"}]
+            }
+          }
+        },
+        {
+          "name": "Get Weekly Summary",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/activities/summary?user_id={{userId}}&week_start=2026-02-24&week_end=2026-03-02",
+              "host": ["{{baseUrl}}"], "path": ["api", "activities", "summary"],
+              "query": [{"key": "user_id", "value": "{{userId}}"}, {"key": "week_start", "value": "2026-02-24"}, {"key": "week_end", "value": "2026-03-02"}]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Goals",
+      "item": [
+        {
+          "name": "Create Goal",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/goals",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_id\": \"{{userId}}\", \"category_name\": \"coding\", \"target_value\": 600, \"period\": \"weekly\"}"
+            }
+          }
+        },
+        {
+          "name": "Get Active Goals",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/goals?user_id={{userId}}",
+              "host": ["{{baseUrl}}"], "path": ["api", "goals"],
+              "query": [{"key": "user_id", "value": "{{userId}}"}]
+            }
+          }
+        },
+        {
+          "name": "Get Goal Progress",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/goals/progress?user_id={{userId}}&week_start=2026-02-24&week_end=2026-03-02",
+              "host": ["{{baseUrl}}"], "path": ["api", "goals", "progress"],
+              "query": [{"key": "user_id", "value": "{{userId}}"}, {"key": "week_start", "value": "2026-02-24"}, {"key": "week_end", "value": "2026-03-02"}]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Metrics",
+      "item": [
+        {
+          "name": "Daily Metrics",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/metrics/daily/2026-03-03?user_id={{userId}}",
+              "host": ["{{baseUrl}}"], "path": ["api", "metrics", "daily", "2026-03-03"],
+              "query": [{"key": "user_id", "value": "{{userId}}"}]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function() { pm.response.to.have.status(200); });",
+                  "pm.test(\"Has metrics and score\", function() { var jsonData = pm.response.json(); pm.expect(jsonData.metrics).to.exist; pm.expect(jsonData.score).to.exist; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Weekly Metrics",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/metrics/weekly?user_id={{userId}}&start_date=2026-02-24&end_date=2026-03-02",
+              "host": ["{{baseUrl}}"], "path": ["api", "metrics", "weekly"],
+              "query": [{"key": "user_id", "value": "{{userId}}"}, {"key": "start_date", "value": "2026-02-24"}, {"key": "end_date", "value": "2026-03-02"}]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analysis",
+      "item": [
+        {
+          "name": "Weekly AI Analysis",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/analysis/weekly?user_id={{userId}}&week_start=2026-02-24&week_end=2026-03-02",
+              "host": ["{{baseUrl}}"], "path": ["api", "analysis", "weekly"],
+              "query": [{"key": "user_id", "value": "{{userId}}"}, {"key": "week_start", "value": "2026-02-24"}, {"key": "week_end", "value": "2026-03-02"}]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cron Jobs",
+      "item": [
+        {
+          "name": "Trigger Weekly Collection",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/cron/collect",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\"telegramId\": 1}"}
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Collection success\", function() { var jsonData = pm.response.json(); pm.expect(jsonData.success).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "MacroDroid Screen Time",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/webhook/macrodroid",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_id\": \"123456789\", \"event_type\": \"screen_time\", \"data\": {\"total_minutes\": 180, \"apps\": [{\"name\": \"VS Code\", \"minutes\": 120}]}, \"timestamp\": \"2026-03-03T12:00:00Z\"}"
+            }
+          }
+        },
+        {
+          "name": "MacroDroid Steps",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/webhook/macrodroid",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_id\": \"123456789\", \"event_type\": \"steps\", \"data\": {\"steps\": 8500, \"goal\": 10000}}"
+            }
+          }
+        },
+        {
+          "name": "MacroDroid Custom",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/webhook/macrodroid",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_id\": \"123456789\", \"event_type\": \"custom\", \"data\": {\"event_name\": \"workout\", \"value\": 45}}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Error Handling",
+      "item": [
+        {
+          "name": "Missing Required Fields",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/chat",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\"user_message\": \"Test\"}"}
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test(\"Returns 400 error\", function() { pm.response.to.have.status(400); });"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
