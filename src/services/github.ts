@@ -1,29 +1,10 @@
 import axios from 'axios';
+import { GitHubCommit, GitHubPullRequest, GitHubActivity } from '../types/github';
 
 // =====================================================
 // GITHUB API SERVICE
 // =====================================================
 // Fetches coding activity from GitHub
-
-interface GitHubCommit {
-  date: string;
-  message: string;
-  repo: string;
-}
-
-interface GitHubPullRequest {
-  title: string;
-  state: 'open' | 'closed' | 'merged';
-  created_at: string;
-  merged_at?: string;
-  repo: string;
-}
-
-interface GitHubActivity {
-  commits: GitHubCommit[];
-  pullRequests: GitHubPullRequest[];
-  totalContributions: number;
-}
 
 /**
  * Get user's GitHub activity for a date range
@@ -57,24 +38,46 @@ export async function getGitHubActivity(
     const events = eventsRes.data || [];
     
     // Filter events by date range - compare date strings to avoid timezone issues
+    // Also include yesterday and tomorrow to handle timezone differences
     const startStr = startDate.split('T')[0];
     const endStr = endDate.split('T')[0];
     
+    // Get dates 1 day before and after for timezone flexibility
+    const startDateObj = new Date(startStr);
+    startDateObj.setDate(startDateObj.getDate() - 1);
+    const extendedStartStr = startDateObj.toISOString().split('T')[0];
+    
+    const endDateObj = new Date(endStr);
+    endDateObj.setDate(endDateObj.getDate() + 1);
+    const extendedEndStr = endDateObj.toISOString().split('T')[0];
+    
     const filteredEvents = events.filter((event: any) => {
       const eventDateStr = event.created_at.split('T')[0];
-      return eventDateStr >= startStr && eventDateStr <= endStr;
+      return eventDateStr >= extendedStartStr && eventDateStr <= extendedEndStr;
     });
 
-    // Extract commits (PushEvent)
+    // Extract commits (PushEvent) - just use event data directly
     const commits: GitHubCommit[] = [];
     const pullRequests: GitHubPullRequest[] = [];
 
     for (const event of filteredEvents) {
       if (event.type === 'PushEvent') {
-        for (const commit of (event.payload.commits || []).slice(0, 5)) {
+        // Use the event data directly - PushEvent has commit info
+        // The commits array in the payload may not always be present, so handle both cases
+        const commitMessages = event.payload.commits || [];
+        if (commitMessages.length > 0) {
+          for (const commit of commitMessages) {
+            commits.push({
+              date: event.created_at,
+              message: commit.message,
+              repo: event.repo.name,
+            });
+          }
+        } else {
+          // Fallback: just record the push event
           commits.push({
             date: event.created_at,
-            message: commit.message,
+            message: `Push to ${event.repo.name}`,
             repo: event.repo.name,
           });
         }

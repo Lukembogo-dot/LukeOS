@@ -4,6 +4,8 @@ import { analyzeWithGemini, GEMINI_MODEL } from './services/gemini';
 import { generateEmbedding } from './services/embeddings';
 import { getMemoryContext, getRecentMessages, getRetrievedCount, saveConversation } from './services/memory';
 import { storeUserMessage, storeAssistantMessage, getConversationHistory, getUserByTelegramId, getWeeklySummary, getActiveGoals } from './services/supabase';
+import { getGitHubActivity } from './services/github';
+import { getAllStravaActivities, summarizeStravaActivities } from './services/strava';
 
 const SYSTEM_PROMPT = `You are LukeOS, a productivity assistant. You have access to the user's data:
 - Their conversation history
@@ -22,6 +24,30 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
     throw new Error('user_message and user_id are required');
   }
 
+  // Auto-detect analyze mode based on user message - ONLY for heavy analysis
+  // Use Gemini for: analysis, evaluation, productivity, reports
+  // Use Groq for: regular chat, questions, conversations
+  const userMessageLower = user_message.toLowerCase();
+  const isAnalyzeQuery = userMessageLower.includes('analyze') || 
+                        userMessageLower.includes('evaluation') ||
+                        userMessageLower.includes('productivity score') ||
+                        userMessageLower.includes('generate report') ||
+                        userMessageLower.includes('weekly report') ||
+                        userMessageLower.includes('monthly report') ||
+                        userMessageLower.includes('productivity report') ||
+                        userMessageLower.includes('detailed analysis') ||
+                        userMessageLower.includes('comprehensive') ||
+                        (userMessageLower.includes('percentage') && userMessageLower.includes('productivity')) ||
+                        (userMessageLower.includes('score') && userMessageLower.includes('productivity')) ||
+                        userMessageLower.includes('assess my performance');
+  
+  // Only auto-switch to Gemini if it's clearly a heavy analysis request
+  const effectiveMode = isAnalyzeQuery && mode === 'chat' ? 'analyze' : mode;
+
+  if (!user_message || !user_id) {
+    throw new Error('user_message and user_id are required');
+  }
+
   // Convert user_id to telegramId (assume it's a number or parse from string)
   const telegramId = typeof user_id === 'string' ? parseInt(user_id, 10) : user_id;
   const isValidTelegramId = Number.isInteger(telegramId) && telegramId > 0 && telegramId < Number.MAX_SAFE_INTEGER;
@@ -31,7 +57,7 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
   const geminiApiKey = process.env.GEMINI_API_KEY;
   const timestamp = new Date().toISOString();
 
-  if (mode === 'embed') {
+  if (effectiveMode === 'embed') {
     const embedResult = await generateEmbedding(user_message, cohereApiKey, 'search_query');
 
     // Store user message with embedding in Supabase if available
@@ -59,7 +85,7 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
     };
   }
 
-  if (mode === 'analyze') {
+  if (effectiveMode === 'analyze') {
     if (!geminiApiKey) {
       throw new Error('GEMINI_API_KEY is not configured');
     }
@@ -73,6 +99,80 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
         const history = await getConversationHistory(userId, 5);
         memoryContext = history.map(m => `${m.role}: ${m.content}`).join('\n');
         retrievedMessages = history.length;
+        
+        // Get weekly activities from database
+        const today = new Date();
+        const weekStart = new Date(today);
+        weekStart.setDate(today.getDate() - 7);
+        const activities = await getWeeklySummary(
+          telegramId,
+          weekStart.toISOString().split('T')[0],
+          today.toISOString().split('T')[0]
+        );
+        
+        // Get active goals
+        const goals = await getActiveGoals(telegramId);
+        
+        // Build user data context
+        if (activities.length > 0 || goals.length > 0) {
+          memoryContext += '\n\n--- USER DATABASE DATA ---\n';
+          
+          if (activities.length > 0) {
+            memoryContext += '\nThis week\'s activities:\n';
+            activities.forEach(a => {
+              memoryContext += `- ${a.category_name}: ${a.total_minutes} minutes (${a.entry_count} sessions)\n`;
+            });
+          }
+          
+          if (goals.length > 0) {
+            memoryContext += '\nYour goals:\n';
+            goals.forEach(g => {
+              memoryContext += `- ${g.category_name}: ${g.target_value} ${g.period}\n`;
+            });
+          }
+          
+          memoryContext += '\n--- END DATABASE DATA ---\n\n';
+        }
+        
+        // Get real-time GitHub data
+        const githubUsername = process.env.GITHUB_USERNAME;
+        const githubToken = process.env.GITHUB_TOKEN;
+        if (githubUsername) {
+          const todayStr = new Date().toISOString().split('T')[0];
+          const githubActivity = await getGitHubActivity(githubUsername, todayStr, todayStr, githubToken);
+          if (githubActivity.commits.length > 0) {
+            memoryContext += '\n--- REAL-TIME GITHUB DATA ---\n';
+            githubActivity.commits.slice(0, 5).forEach((commit: any) => {
+              memoryContext += `- ${commit.repo}: ${commit.message} (${commit.date})\n`;
+            });
+            memoryContext += `Total commits today: ${githubActivity.commits.length}\n`;
+            memoryContext += '\n--- END GITHUB DATA ---\n\n';
+          }
+        }
+        
+        // Get real-time Strava data
+        const stravaToken = process.env.STRAVA_ACCESS_TOKEN;
+        if (stravaToken) {
+          const today = new Date();
+          const pastDate = new Date();
+          pastDate.setDate(today.getDate() - 180);
+          const stravaActivities = await getAllStravaActivities(
+            stravaToken,
+            pastDate.toISOString().split('T')[0],
+            today.toISOString().split('T')[0]
+          );
+          if (stravaActivities.length > 0) {
+            memoryContext += '\n--- REAL-TIME STRAVA DATA ---\n';
+            const recentActivities = stravaActivities.slice(0, 5);
+            recentActivities.forEach((activity: any) => {
+              const distanceKm = (activity.distance / 1000).toFixed(2);
+              const durationMin = Math.round(activity.moving_time / 60);
+              memoryContext += `- ${activity.start_date.split('T')[0]}: ${activity.name}, ${activity.type}, ${distanceKm}km, ${durationMin}min\n`;
+            });
+            memoryContext += `Total activities: ${stravaActivities.length} in last 180 days\n`;
+            memoryContext += '\n--- END STRAVA DATA ---\n\n';
+          }
+        }
       }
     }
     
@@ -162,6 +262,82 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
         }
         
         userContext += '\n--- END USER DATA ---\n\n';
+      }
+      
+      // Check if user is asking about GitHub commits - fetch real-time data
+      const userMessageLower = user_message.toLowerCase();
+      const isGitHubQuery = userMessageLower.includes('commit') || 
+                           userMessageLower.includes('github') ||
+                           userMessageLower.includes('push');
+      
+      if (isGitHubQuery) {
+        const githubUsername = process.env.GITHUB_USERNAME;
+        const githubToken = process.env.GITHUB_TOKEN;
+        
+        if (githubUsername) {
+          // Get today's date for real-time GitHub fetch
+          const today = new Date().toISOString().split('T')[0];
+          const githubActivity = await getGitHubActivity(githubUsername, today, today, githubToken);
+          
+          if (githubActivity.commits.length > 0) {
+            userContext += `\n--- REAL-TIME GITHUB DATA (Today)---\n`;
+            githubActivity.commits.slice(0, 5).forEach((commit: any) => {
+              userContext += `- ${commit.repo}: ${commit.message} (${commit.date})\n`;
+            });
+            userContext += `Total commits today: ${githubActivity.commits.length}\n`;
+            userContext += `--- END GITHUB DATA ---\n`;
+          } else {
+            userContext += `\n--- REAL-TIME GITHUB DATA ---\n`;
+            userContext += `No commits found for today (${today})\n`;
+            userContext += `--- END GITHUB DATA ---\n`;
+          }
+        }
+      }
+      
+      // Check if user is asking about Strava/exercise - fetch real-time data
+      const isStravaQuery = userMessageLower.includes('strava') || 
+                           userMessageLower.includes('exercise') ||
+                           userMessageLower.includes('workout') ||
+                           userMessageLower.includes('run') ||
+                           userMessageLower.includes('cycling') ||
+                           userMessageLower.includes('activity');
+      
+      if (isStravaQuery) {
+        const stravaToken = process.env.STRAVA_ACCESS_TOKEN;
+        
+        if (stravaToken) {
+          // Get last 180 days for historical data ( Strava API limit)
+          const today = new Date();
+          const pastDate = new Date();
+          pastDate.setDate(today.getDate() - 180);
+          
+          const todayStr = today.toISOString().split('T')[0];
+          const pastStr = pastDate.toISOString().split('T')[0];
+          
+          const stravaActivities = await getAllStravaActivities(stravaToken, pastStr, todayStr);
+          
+          if (stravaActivities.length > 0) {
+            const summary = summarizeStravaActivities(stravaActivities);
+            userContext += `\n--- REAL-TIME STRAVA DATA (Last 180 days)---\n`;
+            // Show most recent first
+            const recentActivities = stravaActivities.slice(0, 5);
+            recentActivities.forEach((activity: any) => {
+              const distanceKm = (activity.distance / 1000).toFixed(2);
+              const durationMin = Math.round(activity.moving_time / 60);
+              userContext += `- ${activity.start_date.split('T')[0]}: ${activity.name}, ${activity.type}, ${distanceKm}km, ${durationMin}min\n`;
+            });
+            userContext += `Total activities: ${stravaActivities.length} in last 180 days\n`;
+            userContext += `--- END STRAVA DATA ---\n`;
+          } else {
+            userContext += `\n--- REAL-TIME STRAVA DATA ---\n`;
+            userContext += `No Strava activities found in last 180 days\n`;
+            userContext += `--- END STRAVA DATA ---\n`;
+          }
+        } else {
+          userContext += `\n--- REAL-TIME STRAVA DATA ---\n`;
+          userContext += `Strava not connected. Add STRAVA_ACCESS_TOKEN to .env\n`;
+          userContext += `--- END STRAVA DATA ---\n`;
+        }
       }
     }
   }

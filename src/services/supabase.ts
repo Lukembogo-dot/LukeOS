@@ -636,3 +636,326 @@ export async function getAllGoalsProgress(
 
   return allProgress;
 }
+
+// =====================================================
+// STRAVA SYNC FUNCTIONS
+// =====================================================
+
+/**
+ * Sync Strava activity to productivity_events table
+ */
+export async function syncStravaActivity(
+  telegramId: number,
+  activityData: {
+    strava_id: number;
+    name: string;
+    type: string;
+    distance: number;
+    moving_time: number;
+    calories?: number;
+    start_date: string;
+  }
+): Promise<boolean> {
+  const client = getSupabase();
+  if (!client) return false;
+
+  const userId = await getUserByTelegramId(telegramId);
+  if (!userId) return false;
+
+  const { error } = await client
+    .from('productivity_events')
+    .insert({
+      user_id: userId,
+      timestamp: activityData.start_date,
+      source: 'strava',
+      event_type: 'workout',
+      data: {
+        strava_id: activityData.strava_id,
+        name: activityData.name,
+        type: activityData.type,
+        distance_meters: activityData.distance,
+        distance_km: (activityData.distance / 1000).toFixed(2),
+        duration_seconds: activityData.moving_time,
+        duration_minutes: Math.round(activityData.moving_time / 60),
+        calories: activityData.calories || 0,
+      },
+      category: 'physical',
+    });
+
+  if (error) {
+    console.error('❌ Error syncing Strava activity:', error);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Update daily_metrics with Strava workout data for a specific date
+ */
+export async function updateDailyMetricsWithStrava(
+  telegramId: number,
+  date: string,
+  workoutData: {
+    workout_done: boolean;
+    workout_type?: string;
+    workout_duration_minutes?: number;
+    distance_km?: number;
+    calories_burned?: number;
+  }
+): Promise<boolean> {
+  const client = getSupabase();
+  if (!client) return false;
+
+  const userId = await getUserByTelegramId(telegramId);
+  if (!userId) return false;
+
+  const { error } = await client
+    .from('daily_metrics')
+    .upsert(
+      {
+        user_id: userId,
+        date,
+        workout_done: workoutData.workout_done,
+        workout_type: workoutData.workout_type || null,
+        workout_duration_minutes: workoutData.workout_duration_minutes || null,
+        distance_km: workoutData.distance_km || null,
+        calories_burned: workoutData.calories_burned || null,
+      },
+      { onConflict: 'user_id, date' }
+    );
+
+  if (error) {
+    console.error('❌ Error updating daily metrics with Strava:', error);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Sync all Strava activities to database (for a given date range)
+ */
+export async function syncAllStravaActivities(
+  telegramId: number,
+  activities: Array<{
+    id: number;
+    name: string;
+    type: string;
+    distance: number;
+    moving_time: number;
+    calories?: number;
+    start_date: string;
+  }>
+): Promise<{ synced: number; errors: number }> {
+  let synced = 0;
+  let errors = 0;
+
+  // Group activities by date for daily_metrics
+  const activitiesByDate = new Map<string, typeof activities>();
+
+  for (const activity of activities) {
+    const date = activity.start_date.split('T')[0];
+    
+    // Add to productivity_events
+    const success = await syncStravaActivity(telegramId, {
+      strava_id: activity.id,
+      name: activity.name,
+      type: activity.type,
+      distance: activity.distance,
+      moving_time: activity.moving_time,
+      calories: activity.calories,
+      start_date: activity.start_date,
+    });
+
+    if (success) {
+      synced++;
+    } else {
+      errors++;
+    }
+
+    // Group by date for daily metrics
+    if (!activitiesByDate.has(date)) {
+      activitiesByDate.set(date, []);
+    }
+    activitiesByDate.get(date)!.push(activity);
+  }
+
+  // Update daily_metrics for each date
+  for (const [date, dayActivities] of activitiesByDate) {
+    const totalDuration = dayActivities.reduce((sum, a) => sum + a.moving_time, 0);
+    const totalDistance = dayActivities.reduce((sum, a) => sum + a.distance, 0);
+    const totalCalories = dayActivities.reduce((sum, a) => sum + (a.calories || 0), 0);
+    
+    // Get primary workout type
+    const typeCounts = new Map<string, number>();
+    for (const a of dayActivities) {
+      typeCounts.set(a.type, (typeCounts.get(a.type) || 0) + 1);
+    }
+    const primaryType = [...typeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+
+    await updateDailyMetricsWithStrava(telegramId, date, {
+      workout_done: true,
+      workout_type: primaryType,
+      workout_duration_minutes: Math.round(totalDuration / 60),
+      distance_km: Math.round(totalDistance / 1000 * 100) / 100,
+      calories_burned: Math.round(totalCalories),
+    });
+  }
+
+  return { synced, errors };
+}
+
+// =====================================================
+// GITHUB SYNC FUNCTIONS
+// =====================================================
+
+/**
+ * Sync GitHub activity to productivity_events and github_activity tables
+ */
+export async function syncGitHubActivity(
+  telegramId: number,
+  commitData: {
+    date: string;
+    message: string;
+    repo: string;
+  }
+): Promise<boolean> {
+  const client = getSupabase();
+  if (!client) return false;
+
+  const userId = await getUserByTelegramId(telegramId);
+  if (!userId) return false;
+
+  // Insert into productivity_events
+  const { error: eventError } = await client
+    .from('productivity_events')
+    .insert({
+      user_id: userId,
+      timestamp: commitData.date,
+      source: 'github',
+      event_type: 'push',
+      data: {
+        message: commitData.message,
+        repo: commitData.repo,
+      },
+      category: 'coding',
+    });
+
+  if (eventError) {
+    console.error('❌ Error syncing GitHub event:', eventError);
+  }
+
+  // Insert into github_activity
+  const { error: ghError } = await client
+    .from('github_activity')
+    .insert({
+      user_id: userId,
+      timestamp: commitData.date,
+      repo_name: commitData.repo,
+      commits_count: 1,
+      event_type: 'push',
+      raw_data: { message: commitData.message },
+    });
+
+  if (ghError) {
+    console.error('❌ Error syncing GitHub activity:', ghError);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Update daily_metrics with GitHub data for a specific date
+ */
+export async function updateDailyMetricsWithGitHub(
+  telegramId: number,
+  date: string,
+  githubData: {
+    commits_count: number;
+    lines_added: number;
+    lines_deleted: number;
+  }
+): Promise<boolean> {
+  const client = getSupabase();
+  if (!client) return false;
+
+  const userId = await getUserByTelegramId(telegramId);
+  if (!userId) return false;
+
+  // Calculate coding hours (estimate 30 min per commit)
+  const codingHours = githubData.commits_count * 0.5;
+
+  const { error } = await client
+    .from('daily_metrics')
+    .upsert(
+      {
+        user_id: userId,
+        date,
+        commits_count: githubData.commits_count,
+        lines_added: githubData.lines_added,
+        lines_deleted: githubData.lines_deleted,
+        coding_hours: codingHours,
+      },
+      { onConflict: 'user_id, date' }
+    );
+
+  if (error) {
+    console.error('❌ Error updating daily metrics with GitHub:', error);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Sync all GitHub commits to database (for a given date range)
+ */
+export async function syncAllGitHubActivity(
+  telegramId: number,
+  commits: Array<{
+    date: string;
+    message: string;
+    repo: string;
+  }>,
+  pullRequests: Array<{
+    title: string;
+    state: string;
+    created_at: string;
+    repo: string;
+  }> = []
+): Promise<{ synced: number; errors: number }> {
+  let synced = 0;
+  let errors = 0;
+
+  // Group commits by date for daily_metrics
+  const commitsByDate = new Map<string, typeof commits>();
+
+  for (const commit of commits) {
+    const success = await syncGitHubActivity(telegramId, commit);
+    if (success) {
+      synced++;
+    } else {
+      errors++;
+    }
+
+    // Group by date
+    const date = commit.date.split('T')[0];
+    if (!commitsByDate.has(date)) {
+      commitsByDate.set(date, []);
+    }
+    commitsByDate.get(date)!.push(commit);
+  }
+
+  // Update daily_metrics for each date
+  for (const [date, dayCommits] of commitsByDate) {
+    await updateDailyMetricsWithGitHub(telegramId, date, {
+      commits_count: dayCommits.length,
+      lines_added: 0, // GitHub API doesn't give line stats from events
+      lines_deleted: 0,
+    });
+  }
+
+  return { synced, errors };
+}
