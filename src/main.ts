@@ -3,9 +3,16 @@ import { chatWithGroq } from './services/groq';
 import { analyzeWithGemini, GEMINI_MODEL } from './services/gemini';
 import { generateEmbedding } from './services/embeddings';
 import { getMemoryContext, getRecentMessages, getRetrievedCount, saveConversation } from './services/memory';
-import { storeUserMessage, storeAssistantMessage, getConversationHistory, getUserByTelegramId } from './services/supabase';
+import { storeUserMessage, storeAssistantMessage, getConversationHistory, getUserByTelegramId, getWeeklySummary, getActiveGoals } from './services/supabase';
 
-const SYSTEM_PROMPT = 'You are LukeOS assistant. Be concise, practical, and accurate.';
+const SYSTEM_PROMPT = `You are LukeOS, a productivity assistant. You have access to the user's data:
+- Their conversation history
+- Their logged activities (coding, exercise, reading, etc.)
+- Their goals and progress
+
+IMPORTANT: When the user asks about their productivity, ALWAYS check their data first before giving generic advice. Use their actual logged activities and goals to provide personalized answers.
+
+Be concise, practical, and accurate.`;
 const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
 export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResponse> {
@@ -111,15 +118,51 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
     throw new Error('GROQ_API_KEY is not configured');
   }
 
-  // Get conversation history - try Supabase first, then in-memory fallback
-  let memoryMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  // Get user's data from Supabase (activities, goals, conversation history)
+  let userContext = '';
   let retrievedMessages = 0;
+  let memoryMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   
   if (isValidTelegramId) {
     const userId = await getUserByTelegramId(telegramId);
     if (userId) {
+      // Get conversation history
       memoryMessages = await getConversationHistory(userId, 10);
       retrievedMessages = memoryMessages.length;
+      
+      // Get weekly activities
+      const today = new Date();
+      const weekStart = new Date(today);
+      weekStart.setDate(today.getDate() - 7);
+      const activities = await getWeeklySummary(
+        telegramId,
+        weekStart.toISOString().split('T')[0],
+        today.toISOString().split('T')[0]
+      );
+      
+      // Get active goals
+      const goals = await getActiveGoals(telegramId);
+      
+      // Build context string
+      if (activities.length > 0 || goals.length > 0) {
+        userContext = '\n\n--- USER DATA ---\n';
+        
+        if (activities.length > 0) {
+          userContext += '\nThis week\'s activities:\n';
+          activities.forEach(a => {
+            userContext += `- ${a.category_name}: ${a.total_minutes} minutes (${a.entry_count} sessions)\n`;
+          });
+        }
+        
+        if (goals.length > 0) {
+          userContext += '\nYour goals:\n';
+          goals.forEach(g => {
+            userContext += `- ${g.category_name}: ${g.target_value} ${g.period}\n`;
+          });
+        }
+        
+        userContext += '\n--- END USER DATA ---\n\n';
+      }
     }
   }
   
@@ -135,8 +178,9 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
 
   const messages: GroqMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
+    ...(userContext ? [{ role: 'system' as const, content: userContext }] : []),
     ...memoryMessages,
-    { role: 'user', content: user_message },
+    { role: 'user' as const, content: user_message },
   ];
 
   const chatResponse = await chatWithGroq(messages, groqApiKey);
