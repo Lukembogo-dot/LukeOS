@@ -5,7 +5,7 @@ import chatRouter from './routes/chat';
 import productivityRouter from './routes/productivity';
 import macrodroidRouter from './services/macrodroid';
 import { initSupabase, syncAllStravaActivities, syncAllGitHubActivity } from './services/supabase';
-import { runWeeklyCollection } from './services/cron';
+import { runWeeklyCollection, syncGitHubHistoryForYear } from './services/cron';
 import { getAllStravaActivities } from './services/strava';
 import { getGitHubActivity } from './services/github';
 
@@ -120,7 +120,7 @@ app.post('/api/cron/collect', async (req, res) => {
 app.get('/api/cron/status', (_req, res) => {
   res.json({
     status: 'ready',
-    schedule: 'Weekly (Sundays at midnight)',
+    schedule: 'Daily at midnight',
     manual_trigger: 'POST /api/cron/collect',
     services: {
       github: !!process.env.GITHUB_USERNAME,
@@ -224,6 +224,37 @@ app.post('/api/github/sync', async (req, res) => {
     });
   } catch (error: any) {
     console.error('GitHub sync error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GitHub historical sync - backfill all commits for a specific year
+app.post('/api/github/sync-history', async (req, res) => {
+  const telegramId = req.body.telegramId || req.body.user_id || 1966734159;
+  const year = req.body.year || 2026;
+  
+  const githubUsername = process.env.GITHUB_USERNAME;
+  const githubToken = process.env.GITHUB_TOKEN;
+  
+  if (!githubUsername || !githubToken) {
+    res.status(500).json({ error: 'GitHub credentials not configured' });
+    return;
+  }
+  
+  try {
+    console.log(`🔄 Starting historical GitHub sync for year ${year}...`);
+    console.log('   This may take a while if you have many repositories.');
+    
+    const result = await syncGitHubHistoryForYear(Number(telegramId), year);
+    
+    res.json({
+      message: `Historical sync complete for ${year}`,
+      synced: result.synced,
+      errors: result.errors,
+      year: year
+    });
+  } catch (error: any) {
+    console.error('GitHub historical sync error:', error);
     res.status(500).json({ error: error.message });
   }
 });

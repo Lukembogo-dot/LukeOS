@@ -3,7 +3,7 @@ import { chatWithGroq } from './services/groq';
 import { analyzeWithGemini, GEMINI_MODEL } from './services/gemini';
 import { generateEmbedding } from './services/embeddings';
 import { getMemoryContext, getRecentMessages, getRetrievedCount, saveConversation } from './services/memory';
-import { storeUserMessage, storeAssistantMessage, getConversationHistory, getUserByTelegramId, getWeeklySummary, getActiveGoals } from './services/supabase';
+import { storeUserMessage, storeAssistantMessage, getConversationHistory, getUserByTelegramId, getWeeklySummary, getActiveGoals, syncAllGitHubActivity } from './services/supabase';
 import { getGitHubActivity } from './services/github';
 import { getAllStravaActivities, summarizeStravaActivities } from './services/strava';
 
@@ -96,18 +96,50 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
     if (isValidTelegramId) {
       const userId = await getUserByTelegramId(telegramId);
       if (userId) {
-        const history = await getConversationHistory(userId, 5);
+        const history = await getConversationHistory(userId, 20);
         memoryContext = history.map(m => `${m.role}: ${m.content}`).join('\n');
         retrievedMessages = history.length;
         
-        // Get weekly activities from database
+        // Get activities from database - parse date from user message for targeted queries
         const today = new Date();
-        const weekStart = new Date(today);
-        weekStart.setDate(today.getDate() - 7);
+        let startDate = new Date(today);
+        let endDate = new Date(today);
+        let dateLabel = 'last 90 days';
+        
+        // Detect date-specific queries for activities
+        const msgLower = userMessageLower;
+        
+        if (msgLower.includes('yesterday')) {
+          startDate.setDate(today.getDate() - 1);
+          endDate.setDate(today.getDate() - 1);
+          dateLabel = 'yesterday';
+        } else if (msgLower.includes('today')) {
+          // today - keep default
+          dateLabel = 'today';
+        } else if (msgLower.includes('last week') || msgLower.includes('this week')) {
+          startDate.setDate(today.getDate() - 7);
+          dateLabel = 'this week';
+        } else if (msgLower.includes('last month') || msgLower.includes('this month')) {
+          startDate.setDate(today.getDate() - 30);
+          dateLabel = 'this month';
+        } else if (msgLower.includes('last 2 weeks') || msgLower.includes('2 weeks')) {
+          startDate.setDate(today.getDate() - 14);
+          dateLabel = 'last 2 weeks';
+        } else if (msgLower.includes('last 3 days')) {
+          startDate.setDate(today.getDate() - 3);
+          dateLabel = 'last 3 days';
+        } else if (msgLower.includes('last 7 days')) {
+          startDate.setDate(today.getDate() - 7);
+          dateLabel = 'last 7 days';
+        } else {
+          // Default: 90 days for comprehensive analysis
+          startDate.setDate(today.getDate() - 90);
+        }
+        
         const activities = await getWeeklySummary(
           telegramId,
-          weekStart.toISOString().split('T')[0],
-          today.toISOString().split('T')[0]
+          startDate.toISOString().split('T')[0],
+          endDate.toISOString().split('T')[0]
         );
         
         // Get active goals
@@ -118,7 +150,7 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
           memoryContext += '\n\n--- USER DATABASE DATA ---\n';
           
           if (activities.length > 0) {
-            memoryContext += '\nThis week\'s activities:\n';
+            memoryContext += `\nYour activities (${dateLabel}):\n`;
             activities.forEach(a => {
               memoryContext += `- ${a.category_name}: ${a.total_minutes} minutes (${a.entry_count} sessions)\n`;
             });
@@ -134,18 +166,62 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
           memoryContext += '\n--- END DATABASE DATA ---\n\n';
         }
         
-        // Get real-time GitHub data
+        // Get real-time GitHub data - detect date-specific queries
         const githubUsername = process.env.GITHUB_USERNAME;
         const githubToken = process.env.GITHUB_TOKEN;
         if (githubUsername) {
-          const todayStr = new Date().toISOString().split('T')[0];
-          const githubActivity = await getGitHubActivity(githubUsername, todayStr, todayStr, githubToken);
+          // Parse date range from user message
+          const today = new Date();
+          let startDate = new Date(today);
+          let endDate = new Date(today);
+          let dateLabel = 'today';
+          
+          // Detect date-specific queries
+          const msgLower = userMessageLower;
+          
+          if (msgLower.includes('yesterday')) {
+            // Fetch 2 days to ensure we catch yesterday's commits (timezone flexibility)
+            startDate.setDate(today.getDate() - 2);
+            endDate.setDate(today.getDate() - 1);
+            dateLabel = 'yesterday';
+          } else if (msgLower.includes('last week') || msgLower.includes('this week')) {
+            startDate.setDate(today.getDate() - 7);
+            dateLabel = 'the last 7 days';
+          } else if (msgLower.includes('last month') || msgLower.includes('this month')) {
+            startDate.setDate(today.getDate() - 30);
+            dateLabel = 'the last 30 days';
+          } else if (msgLower.includes('last 2 weeks') || msgLower.includes('2 weeks')) {
+            startDate.setDate(today.getDate() - 14);
+            dateLabel = 'the last 14 days';
+          } else if (msgLower.includes('last 3 days') || msgLower.includes('3 days')) {
+            startDate.setDate(today.getDate() - 3);
+            dateLabel = 'the last 3 days';
+          }
+          
+          const startDateStr = startDate.toISOString().split('T')[0];
+          const endDateStr = endDate.toISOString().split('T')[0];
+          
+          const githubActivity = await getGitHubActivity(githubUsername, startDateStr, endDateStr, githubToken);
+          
+          // Save fetched GitHub data to database for future use
+          if (githubActivity.commits.length > 0 && isValidTelegramId) {
+            void syncAllGitHubActivity(
+              telegramId,
+              githubActivity.commits,
+              githubActivity.pullRequests
+            ).catch((err) => console.error('⚠️ Failed to save GitHub data:', err));
+          }
+          
           if (githubActivity.commits.length > 0) {
             memoryContext += '\n--- REAL-TIME GITHUB DATA ---\n';
-            githubActivity.commits.slice(0, 5).forEach((commit: any) => {
+            githubActivity.commits.slice(0, 10).forEach((commit: any) => {
               memoryContext += `- ${commit.repo}: ${commit.message} (${commit.date})\n`;
             });
-            memoryContext += `Total commits today: ${githubActivity.commits.length}\n`;
+            memoryContext += `Total commits ${dateLabel}: ${githubActivity.commits.length}\n`;
+            memoryContext += '\n--- END GITHUB DATA ---\n\n';
+          } else {
+            memoryContext += '\n--- REAL-TIME GITHUB DATA ---\n';
+            memoryContext += `No commits found for ${dateLabel} (${startDateStr} to ${endDateStr})\n`;
             memoryContext += '\n--- END GITHUB DATA ---\n\n';
           }
         }
@@ -227,17 +303,47 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
     const userId = await getUserByTelegramId(telegramId);
     if (userId) {
       // Get conversation history
-      memoryMessages = await getConversationHistory(userId, 10);
+      memoryMessages = await getConversationHistory(userId, 30);
       retrievedMessages = memoryMessages.length;
       
-      // Get weekly activities
+      // Get activities from database - parse date from user message for targeted queries
       const today = new Date();
-      const weekStart = new Date(today);
-      weekStart.setDate(today.getDate() - 7);
+      let startDate = new Date(today);
+      let endDate = new Date(today);
+      let dateLabel = 'last 90 days';
+      
+      // Detect date-specific queries for activities
+      if (userMessageLower.includes('yesterday')) {
+        startDate.setDate(today.getDate() - 1);
+        endDate.setDate(today.getDate() - 1);
+        dateLabel = 'yesterday';
+      } else if (userMessageLower.includes('today')) {
+        // today - keep default
+        dateLabel = 'today';
+      } else if (userMessageLower.includes('last week') || userMessageLower.includes('this week')) {
+        startDate.setDate(today.getDate() - 7);
+        dateLabel = 'this week';
+      } else if (userMessageLower.includes('last month') || userMessageLower.includes('this month')) {
+        startDate.setDate(today.getDate() - 30);
+        dateLabel = 'this month';
+      } else if (userMessageLower.includes('last 2 weeks') || userMessageLower.includes('2 weeks')) {
+        startDate.setDate(today.getDate() - 14);
+        dateLabel = 'last 2 weeks';
+      } else if (userMessageLower.includes('last 3 days')) {
+        startDate.setDate(today.getDate() - 3);
+        dateLabel = 'last 3 days';
+      } else if (userMessageLower.includes('last 7 days')) {
+        startDate.setDate(today.getDate() - 7);
+        dateLabel = 'last 7 days';
+      } else {
+        // Default: 90 days for comprehensive context
+        startDate.setDate(today.getDate() - 90);
+      }
+      
       const activities = await getWeeklySummary(
         telegramId,
-        weekStart.toISOString().split('T')[0],
-        today.toISOString().split('T')[0]
+        startDate.toISOString().split('T')[0],
+        endDate.toISOString().split('T')[0]
       );
       
       // Get active goals
@@ -248,7 +354,7 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
         userContext = '\n\n--- USER DATA ---\n';
         
         if (activities.length > 0) {
-          userContext += '\nThis week\'s activities:\n';
+          userContext += `\nYour activities (${dateLabel}):\n`;
           activities.forEach(a => {
             userContext += `- ${a.category_name}: ${a.total_minutes} minutes (${a.entry_count} sessions)\n`;
           });
@@ -265,7 +371,6 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
       }
       
       // Check if user is asking about GitHub commits - fetch real-time data
-      const userMessageLower = user_message.toLowerCase();
       const isGitHubQuery = userMessageLower.includes('commit') || 
                            userMessageLower.includes('github') ||
                            userMessageLower.includes('push');
@@ -275,20 +380,56 @@ export async function handleBrainRequest(payload: ChatRequest): Promise<ChatResp
         const githubToken = process.env.GITHUB_TOKEN;
         
         if (githubUsername) {
-          // Get today's date for real-time GitHub fetch
-          const today = new Date().toISOString().split('T')[0];
-          const githubActivity = await getGitHubActivity(githubUsername, today, today, githubToken);
+          // Parse date range from user message
+          const today = new Date();
+          let startDate = new Date(today);
+          let endDate = new Date(today);
+          let dateLabel = 'today';
+          
+          // Detect date-specific queries
+          if (userMessageLower.includes('yesterday')) {
+            // Fetch 2 days to ensure we catch yesterday's commits (timezone flexibility)
+            startDate.setDate(today.getDate() - 2);
+            endDate.setDate(today.getDate() - 1);
+            dateLabel = 'yesterday';
+          } else if (userMessageLower.includes('last week') || userMessageLower.includes('this week')) {
+            startDate.setDate(today.getDate() - 7);
+            dateLabel = 'the last 7 days';
+          } else if (userMessageLower.includes('last month') || userMessageLower.includes('this month')) {
+            startDate.setDate(today.getDate() - 30);
+            dateLabel = 'the last 30 days';
+          } else if (userMessageLower.includes('last 2 weeks') || userMessageLower.includes('2 weeks')) {
+            startDate.setDate(today.getDate() - 14);
+            dateLabel = 'the last 14 days';
+          } else if (userMessageLower.includes('last 3 days') || userMessageLower.includes('3 days')) {
+            startDate.setDate(today.getDate() - 3);
+            dateLabel = 'the last 3 days';
+          }
+          
+          const startDateStr = startDate.toISOString().split('T')[0];
+          const endDateStr = endDate.toISOString().split('T')[0];
+          
+          const githubActivity = await getGitHubActivity(githubUsername, startDateStr, endDateStr, githubToken);
+          
+          // Save fetched GitHub data to database for future use
+          if (githubActivity.commits.length > 0 && isValidTelegramId) {
+            void syncAllGitHubActivity(
+              telegramId,
+              githubActivity.commits,
+              githubActivity.pullRequests
+            ).catch((err) => console.error('⚠️ Failed to save GitHub data:', err));
+          }
           
           if (githubActivity.commits.length > 0) {
-            userContext += `\n--- REAL-TIME GITHUB DATA (Today)---\n`;
-            githubActivity.commits.slice(0, 5).forEach((commit: any) => {
+            userContext += `\n--- REAL-TIME GITHUB DATA (${dateLabel})---\n`;
+            githubActivity.commits.slice(0, 10).forEach((commit: any) => {
               userContext += `- ${commit.repo}: ${commit.message} (${commit.date})\n`;
             });
-            userContext += `Total commits today: ${githubActivity.commits.length}\n`;
+            userContext += `Total commits ${dateLabel}: ${githubActivity.commits.length}\n`;
             userContext += `--- END GITHUB DATA ---\n`;
           } else {
-            userContext += `\n--- REAL-TIME GITHUB DATA ---\n`;
-            userContext += `No commits found for today (${today})\n`;
+            userContext += `\n--- REAL-TIME GITHUB DATA (${dateLabel})---\n`;
+            userContext += `No commits found for ${dateLabel} (${startDateStr} to ${endDateStr})\n`;
             userContext += `--- END GITHUB DATA ---\n`;
           }
         }

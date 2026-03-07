@@ -812,6 +812,7 @@ export async function syncAllStravaActivities(
 
 /**
  * Sync GitHub activity to productivity_events and github_activity tables
+ * Prevents duplicates by checking if entry already exists
  */
 export async function syncGitHubActivity(
   telegramId: number,
@@ -826,6 +827,22 @@ export async function syncGitHubActivity(
 
   const userId = await getUserByTelegramId(telegramId);
   if (!userId) return false;
+
+  // Check for duplicates - don't insert if this commit already exists
+  const timestamp = commitData.date.split('T')[0];
+  const { data: existing } = await client
+    .from('github_activity')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('repo_name', commitData.repo)
+    .gte('timestamp', `${timestamp}T00:00:00Z`)
+    .lt('timestamp', `${timestamp}T23:59:59Z`)
+    .limit(1);
+
+  if (existing && existing.length > 0) {
+    // Already synced this repo for this day, skip
+    return true;
+  }
 
   // Insert into productivity_events
   const { error: eventError } = await client
@@ -854,6 +871,7 @@ export async function syncGitHubActivity(
       timestamp: commitData.date,
       repo_name: commitData.repo,
       commits_count: 1,
+      commit_message: commitData.message,
       event_type: 'push',
       raw_data: { message: commitData.message },
     });

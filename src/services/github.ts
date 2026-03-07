@@ -26,19 +26,15 @@ export async function getGitHubActivity(
   }
 
   try {
-    // Get user's contributions calendar (last year)
-    const [userRes, eventsRes] = await Promise.all([
-      axios.get(`https://api.github.com/users/${username}`, { headers }),
-      axios.get(`https://api.github.com/users/${username}/events`, { 
-        headers,
-        params: { per_page: 100 }
-      })
-    ]);
+    // Get user's events
+    const eventsRes = await axios.get(`https://api.github.com/users/${username}/events`, { 
+      headers,
+      params: { per_page: 100 }
+    });
 
     const events = eventsRes.data || [];
     
-    // Filter events by date range - compare date strings to avoid timezone issues
-    // Also include yesterday and tomorrow to handle timezone differences
+    // Filter events by date range
     const startStr = startDate.split('T')[0];
     const endStr = endDate.split('T')[0];
     
@@ -55,33 +51,59 @@ export async function getGitHubActivity(
       const eventDateStr = event.created_at.split('T')[0];
       return eventDateStr >= extendedStartStr && eventDateStr <= extendedEndStr;
     });
+    
+    console.log(`📊 Found ${events.length} total events, ${filteredEvents.length} in range ${extendedStartStr}-${extendedEndStr}`);
+    console.log(`🔍 PushEvents: ${filteredEvents.filter((e: any) => e.type === 'PushEvent').length}`);
 
-    // Extract commits (PushEvent) - just use event data directly
+    // Extract commits (PushEvent) - need to fetch commit details from commits API
     const commits: GitHubCommit[] = [];
     const pullRequests: GitHubPullRequest[] = [];
-
-    for (const event of filteredEvents) {
-      if (event.type === 'PushEvent') {
-        // Use the event data directly - PushEvent has commit info
-        // The commits array in the payload may not always be present, so handle both cases
-        const commitMessages = event.payload.commits || [];
-        if (commitMessages.length > 0) {
-          for (const commit of commitMessages) {
-            commits.push({
-              date: event.created_at,
-              message: commit.message,
-              repo: event.repo.name,
-            });
-          }
-        } else {
-          // Fallback: just record the push event
+    
+    // Get unique repos from push events
+    const pushEvents = filteredEvents.filter((e: any) => e.type === 'PushEvent');
+    
+    // Fetch commit details for each repo
+    for (const event of pushEvents) {
+      const repoName = event.repo.name;
+      const headSha = event.payload.head;
+      
+      if (headSha) {
+        try {
+          // Fetch the commit details from the commits API
+          const commitRes = await axios.get(
+            `https://api.github.com/repos/${repoName}/commits/${headSha}`, 
+            { headers }
+          );
+          
+          const commitData = commitRes.data;
           commits.push({
             date: event.created_at,
-            message: `Push to ${event.repo.name}`,
-            repo: event.repo.name,
+            message: commitData.commit?.message || `Push to ${repoName}`,
+            repo: repoName,
+          });
+        } catch (commitErr) {
+          // Fallback if we can't fetch commit details
+          commits.push({
+            date: event.created_at,
+            message: `Push to ${repoName} (SHA: ${headSha})`,
+            repo: repoName,
           });
         }
-      } else if (event.type === 'PullRequestEvent') {
+      } else {
+        commits.push({
+          date: event.created_at,
+          message: `Push to ${repoName}`,
+          repo: repoName,
+        });
+      }
+      
+      // Rate limiting - be nice to GitHub API
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    // Process PullRequestEvents
+    for (const event of filteredEvents) {
+      if (event.type === 'PullRequestEvent' && event.payload.pull_request) {
         pullRequests.push({
           title: event.payload.pull_request.title,
           state: event.payload.pull_request.merged ? 'merged' : event.payload.pull_request.state,

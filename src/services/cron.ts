@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { getSupabase, getOrCreateUser, logActivity } from './supabase';
+import { getSupabase, getOrCreateUser, logActivity, syncAllGitHubActivity } from './supabase';
 import { getGitHubActivity, summarizeGitHubActivity } from './github';
 import { getAllStravaActivities, summarizeStravaActivities, getExerciseMinutes, getWorkoutStreak } from './strava';
 
@@ -193,7 +193,7 @@ export async function runWeeklyCollection(telegramId: number = 1): Promise<{
 }
 
 /**
- * Schedule weekly cron jobs
+ * Schedule daily cron job
  * Note: This requires the node-cron package
  */
 export async function scheduleCronJobs(): Promise<void> {
@@ -201,15 +201,125 @@ export async function scheduleCronJobs(): Promise<void> {
     // Dynamic import to avoid issues if node-cron isn't installed
     const cronModule = await import('node-cron');
     const cron = cronModule.default;
-      // Run every Sunday at midnight
-      cron.schedule('0 0 * * 0', async () => {
-        console.log('\n🕛 Weekly cron job triggered');
-        await runWeeklyCollection();
-      });
-      
-      console.log('✅ Cron jobs scheduled: weekly collection (Sunday midnight)');
-    console.log('✅ Cron jobs scheduled: weekly collection (Sunday midnight)');
+    
+    // Run daily at midnight for fresh data
+    cron.schedule('0 0 * * *', async () => {
+      console.log('\n🕛 Daily cron job triggered');
+      await runWeeklyCollection();
+    });
+    
+    console.log('✅ Cron job scheduled: daily collection (midnight)');
   } catch (error) {
     console.warn('⚠️ Could not schedule cron jobs:', error);
+  }
+}
+
+// =====================================================
+// HISTORICAL GITHUB SYNC (for backfilling past data)
+// =====================================================
+
+/**
+ * Sync all GitHub commits for a year (uses commits API which has no 90-day limit)
+ * Note: This can take a while if user has many repositories
+ */
+export async function syncGitHubHistoryForYear(
+  telegramId: number,
+  year: number = 2026
+): Promise<{ synced: number; errors: number }> {
+  const githubUsername = process.env.GITHUB_USERNAME;
+  const githubToken = process.env.GITHUB_TOKEN;
+  
+  if (!githubUsername || !githubToken) {
+    console.error('❌ GitHub credentials not configured');
+    return { synced: 0, errors: 0 };
+  }
+  
+  const headers = {
+    'Accept': 'application/vnd.github.v3+json',
+    'Authorization': `token ${githubToken}`,
+  };
+  
+  console.log(`\n📂 Fetching all GitHub repos for ${githubUsername}...`);
+  
+  try {
+    // Get all user repositories
+    const reposRes = await axios.get(`https://api.github.com/user/repos`, {
+      headers,
+      params: { per_page: 100, sort: 'updated' }
+    });
+    
+    const repos = reposRes.data || [];
+    console.log(`  Found ${repos.length} repositories`);
+    
+    const allCommits: Array<{ date: string; message: string; repo: string }> = [];
+    const startDate = `${year}-01-01`;
+    const endDate = `${year}-12-31`;
+    
+    // Fetch commits from each repository for the specified year
+    for (const repo of repos) {
+      try {
+        let page = 1;
+        let hasMore = true;
+        let repoCommitCount = 0;
+        
+        // Paginate through all commits for this repo
+        while (hasMore) {
+          const commitsRes = await axios.get(
+            `https://api.github.com/repos/${repo.full_name}/commits`,
+            {
+              headers,
+              params: {
+                since: `${year}-01-01T00:00:00Z`,
+                until: `${year + 1}-01-01T00:00:00Z`,
+                per_page: 100,
+                page
+              }
+            }
+          );
+          
+          const commits = commitsRes.data || [];
+          
+          for (const commit of commits) {
+            // Skip commits outside the year
+            const commitDate = new Date(commit.commit.author.date);
+            if (commitDate.getFullYear() !== year) continue;
+            
+            allCommits.push({
+              date: commit.commit.author.date,
+              message: commit.commit.message,
+              repo: repo.full_name,
+            });
+            repoCommitCount++;
+          }
+          
+          // Check if there are more pages
+          hasMore = commits.length === 100;
+          page++;
+        }
+        
+        if (repoCommitCount > 0) {
+          console.log(`  📁 ${repo.name}: ${repoCommitCount} commits in ${year}`);
+        }
+        
+        // Rate limiting - be nice to GitHub API
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+      } catch (repoErr: any) {
+        console.warn(`  ⚠️ Could not fetch commits for ${repo.name}: ${repoErr.response?.status || repoErr.message}`);
+      }
+    }
+    
+    console.log(`\n💾 Syncing ${allCommits.length} commits to database...`);
+    
+    // Save all commits to database
+    const result = await syncAllGitHubActivity(telegramId, allCommits, []);
+    
+    console.log(`\n✅ Historical sync complete: ${result.synced} commits synced, ${result.errors} errors`);
+    
+    return result;
+    
+  } catch (error: any) {
+    console.error('❌ Historical GitHub sync error:', error.message);
+    return { synced: 0, errors: 1 };
   }
 }
